@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Zombie Survival Game</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        canvas {
+            border: 1px solid #000;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game class
+        class Game {
+            constructor() {
+                this.state = 'start';
+                this.player = new Player(400, 300);
+                this.zombieManager = new ZombieManager();
+                this.obstacleManager = new ObstacleManager();
+                this.store = new Store(this);
+                this.wave = 0;
+                this.coins = 0;
+                this.lastTime = 0;
+                this.keys = {};
+
+                // Keyboard event listeners
+                window.addEventListener('keydown', (e) => {
+                    this.keys[e.key.toLowerCase()] = true;
+                    if (this.state === 'start' && Object.keys(this.keys).length > 0) {
+                        this.update(0); // Trigger start immediately
+                    } else if (this.state === 'store' && e.key.toLowerCase() === 'c') {
+                        this.update(0); // Trigger store to play transition
+                    } else if (this.state === 'gameOver' && e.key.toLowerCase() === 'r') {
+                        this.restart();
+                    }
+                });
+                window.addEventListener('keyup', (e) => this.keys[e.key.toLowerCase()] = false);
+
+                canvas.addEventListener('click', (e) => {
+                    const rect = canvas.getBoundingClientRect();
+                    const mouseX = e.clientX - rect.left;
+                    const mouseY = e.clientY - rect.top;
+                    if (this.state === 'play') {
+                        this.player.shoot(mouseX, mouseY);
+                    } else if (this.state === 'store') {
+                        this.store.handleClick(mouseX, mouseY);
+                    }
+                });
+
+                canvas.addEventListener('mousemove', (e) => {
+                    const rect = canvas.getBoundingClientRect();
+                    this.player.aimX = e.clientX - rect.left;
+                    this.player.aimY = e.clientY - rect.top;
+                });
+
+                // Load assets and sounds
+                this.playerImage = new Image();
+                this.playerImage.src = 'player.png';
+                this.zombieImage = new Image();
+                this.zombieImage.src = 'zombie.png';
+
+                // Load sound effects
+                this.zombieSound = new Audio('zombie-sound.mp3'); // Background sound for alive zombies
+                this.shootSound = new Audio('shoot.mp3'); // Sound for player shooting
+                this.clearWaveSound = new Audio('clear-wave.mp3'); // Sound for clearing a wave
+                this.zombieDeathSound = new Audio('zombie-death.mp3'); // Sound for killing a zombie
+
+                // Configure zombie sound to loop and play softly in the background
+                this.zombieSound.loop = true;
+                this.zombieSound.volume = 0.3; // Lower volume for background effect
+
+                this.gameLoop(0);
+            }
+
+            gameLoop(timestamp) {
+                const deltaTime = (timestamp - this.lastTime) / 1000;
+                this.lastTime = timestamp;
+
+                this.update(deltaTime);
+                this.render();
+
+                requestAnimationFrame((time) => this.gameLoop(time));
+            }
+
+            update(deltaTime) {
+                if (this.state === 'start' && Object.keys(this.keys).length > 0) {
+                    console.log('Starting game');
+                    this.state = 'play';
+                    this.nextWave();
+                } else if (this.state === 'play') {
+                    this.player.update(deltaTime, this.keys, this.obstacleManager.obstacles);
+                    this.zombieManager.update(deltaTime, this.player, this.obstacleManager.obstacles);
+                    if (this.zombieManager.zombies.length === 0) {
+                        console.log(`Wave ${this.wave} cleared, switching to store`);
+                        this.state = 'store';
+                        this.clearWaveSound.play().catch(e => console.log('Clear wave sound failed:', e));
+                    }
+                    if (this.player.health <= 0) {
+                        console.log('Player health depleted, game over');
+                        this.state = 'gameOver';
+                    }
+
+                    // Play zombie sound if any zombies are alive
+                    if (this.zombieManager.zombies.length > 0 && !this.zombieSound.playing) {
+                        this.zombieSound.play().catch(e => console.log('Zombie sound failed:', e));
+                    } else if (this.zombieManager.zombies.length === 0 && this.zombieSound.playing) {
+                        this.zombieSound.pause();
+                        this.zombieSound.currentTime = 0; // Reset sound
+                    }
+                } else if (this.state === 'store' && this.keys['c']) {
+                    this.state = 'play';
+                    this.nextWave();
+                }
+            }
+
+            nextWave() {
+                this.wave++;
+                const zombieCount = 5 + this.wave * 2; // Adjusted for balance
+                console.log(`Starting Wave ${this.wave} with ${zombieCount} zombies`);
+                this.zombieManager.spawnZombies(zombieCount);
+            }
+
+            restart() {
+                console.log('Restarting game');
+                this.state = 'start';
+                this.player = new Player(400, 300);
+                this.zombieManager = new ZombieManager();
+                this.store = new Store(this);
+                this.wave = 0;
+                this.coins = 0;
+                this.keys = {}; // Reset keys to prevent stuck states
+
+                // Reinitialize images to ensure they load fresh on restart
+                this.playerImage = new Image();
+                this.playerImage.src = 'player.png';
+                this.zombieImage = new Image();
+                this.zombieImage.src = 'zombie.png';
+
+                // Stop and reset sounds on restart
+                this.zombieSound.pause();
+                this.zombieSound.currentTime = 0;
+            }
+
+            render() {
+                ctx.fillStyle = '#fff'; // Changed background to white
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                if (this.state === 'start') {
+                    ctx.fillStyle = '#000'; // Black text for start screen
+                    ctx.font = '40px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Zombie Survival', canvas.width / 2, canvas.height / 2 - 50);
+                    ctx.font = '24px Arial';
+                    ctx.fillText('Press any key to start', canvas.width / 2, canvas.height / 2 + 20);
+                } else if (this.state === 'play') {
+                    this.obstacleManager.render(ctx);
+                    this.player.render(ctx);
+                    this.zombieManager.render(ctx);
+                    // UI: Health, Coins, Wave (black text on white background)
+                    ctx.fillStyle = '#000';
+                    ctx.font = '20px Arial';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(`Health: ${this.player.health}/${this.player.maxHealth}`, 10, 30);
+                    ctx.fillText(`Coins: ${this.coins}`, 10, 60);
+                    ctx.fillText(`Wave: ${this.wave}`, 10, 90);
+                } else if (this.state === 'store') {
+                    this.store.render(ctx);
+                } else if (this.state === 'gameOver') {
+                    ctx.fillStyle = '#000'; // Black text for game over screen
+                    ctx.font = '40px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2 - 50);
+                    ctx.font = '24px Arial';
+                    ctx.fillText(`Final Score: Wave ${this.wave}, Coins ${this.coins}`, canvas.width / 2, canvas.height / 2);
+                    ctx.fillText('Press R to restart', canvas.width / 2, canvas.height / 2 + 50);
+                }
+            }
+        }
+
+        // Player class
+        class Player {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.health = 100;
+                this.maxHealth = 100;
+                this.speed = 5;
+                this.radius = 20;
+                this.weapons = [{ name: 'pistol', damage: 10, fireRate: 2, lastShot: 0 }];
+                this.currentWeapon = 0;
+                this.bullets = [];
+                this.direction = 0; // Initial direction (0 radians = right)
+            }
+
+            update(deltaTime, keys, obstacles) {
+                const moveDistance = this.speed * deltaTime * 60;
+                let newX = this.x;
+                let newY = this.y;
+
+                if (keys['w'] && this.y - this.radius > 0) newY -= moveDistance;
+                if (keys['s'] && this.y + this.radius < canvas.height) newY += moveDistance;
+                if (keys['a'] && this.x - this.radius > 0) newX -= moveDistance;
+                if (keys['d'] && this.x + this.radius < canvas.width) newX += moveDistance;
+
+                if (!this.checkCollision(newX, newY, obstacles)) {
+                    this.x = newX;
+                    this.y = newY;
+                }
+
+                this.bullets = this.bullets.filter(b => b.x >= 0 && b.x <= canvas.width && b.y >= 0 && b.y <= canvas.height);
+                this.bullets.forEach(b => {
+                    b.x += b.vx * deltaTime * 60;
+                    b.y += b.vy * deltaTime * 60;
+                });
+
+                // Update direction based on aim (mouse position)
+                if (game.player.aimX !== undefined && game.player.aimY !== undefined) {
+                    const dx = game.player.aimX - this.x;
+                    const dy = game.player.aimY - this.y;
+                    this.direction = Math.atan2(dy, dx); // Use atan2 directly for right-facing default
+                }
+            }
+
+            shoot(mouseX, mouseY) {
+                const weapon = this.weapons[this.currentWeapon];
+                const now = performance.now() / 1000;
+                if (now - weapon.lastShot >= 1 / weapon.fireRate) {
+                    const angle = Math.atan2(mouseY - this.y, mouseX - this.x);
+                    const bullet = {
+                        x: this.x,
+                        y: this.y,
+                        vx: Math.cos(angle) * 10,
+                        vy: Math.sin(angle) * 10
+                    };
+                    if (weapon.name === 'shotgun') {
+                        for (let i = -1; i <= 1; i++) {
+                            const spreadAngle = angle + (i * 0.2);
+                            this.bullets.push({
+                                x: this.x,
+                                y: this.y,
+                                vx: Math.cos(spreadAngle) * 10,
+                                vy: Math.sin(spreadAngle) * 10
+                            });
+                        }
+                    } else {
+                        this.bullets.push(bullet);
+                    }
+                    weapon.lastShot = now;
+                    game.shootSound.play().catch(e => console.log('Shoot sound failed:', e));
+                }
+            }
+
+            render(ctx) {
+                // Use player.png with rotation based on direction
+                if (game.playerImage.complete) {
+                    ctx.save();
+                    ctx.translate(this.x, this.y);
+                    ctx.rotate(this.direction);
+                    ctx.drawImage(game.playerImage, -this.radius, -this.radius, this.radius * 2, this.radius * 2);
+                    ctx.restore();
+                } else {
+                    ctx.fillStyle = 'blue';
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                ctx.fillStyle = 'yellow';
+                this.bullets.forEach(b => {
+                    ctx.beginPath();
+                    ctx.arc(b.x, b.y, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+
+            checkCollision(newX, newY, obstacles) {
+                const playerRect = {
+                    left: newX - this.radius,
+                    right: newX + this.radius,
+                    top: newY - this.radius,
+                    bottom: newY + this.radius
+                };
+                return obstacles.some(obstacle => 
+                    playerRect.left < obstacle.right &&
+                    playerRect.right > obstacle.left &&
+                    playerRect.top < obstacle.bottom &&
+                    playerRect.bottom > obstacle.top
+                );
+            }
+        }
+
+        // ZombieManager class
+        class ZombieManager {
+            constructor() {
+                this.zombies = [];
+            }
+
+            spawnZombies(count) {
+                for (let i = 0; i < count; i++) {
+                    const side = Math.floor(Math.random() * 4);
+                    let x, y;
+                    switch (side) {
+                        case 0: x = Math.random() * canvas.width; y = -20; break;
+                        case 1: x = canvas.width + 20; y = Math.random() * canvas.height; break;
+                        case 2: x = Math.random() * canvas.width; y = canvas.height + 20; break;
+                        case 3: x = -20; y = Math.random() * canvas.height; break;
+                    }
+                    this.zombies.push(new Zombie(x, y));
+                }
+                console.log(`Spawned ${count} zombies, current count: ${this.zombies.length}`);
+            }
+
+            update(deltaTime, player, obstacles) {
+                let zombiesRemoved = 0;
+                for (let i = this.zombies.length - 1; i >= 0; i--) {
+                    const zombie = this.zombies[i];
+                    zombie.update(deltaTime, player, obstacles);
+                    // Check for collision with player with cooldown
+                    const now = performance.now() / 1000;
+                    const dx = zombie.x - player.x;
+                    const dy = zombie.y - player.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+                    if (distance < zombie.radius + player.radius && now - zombie.lastHit >= 1) { // 1-second cooldown
+                        player.health -= 2; // Reduced damage per hit for balancing
+                        zombie.lastHit = now; // Update last hit time
+                        console.log(`Player hit by zombie ${i}, health now: ${player.health}`);
+                    }
+                    let hitThisFrame = false;
+                    for (let j = player.bullets.length - 1; j >= 0; j--) {
+                        const bullet = player.bullets[j];
+                        const bdx = bullet.x - zombie.x;
+                        const bdy = bullet.y - zombie.y;
+                        const bdistance = Math.sqrt(bdx * bdx + bdy * bdy);
+                        if (bdistance < zombie.radius + 5) { // 15 (zombie) + 5 (bullet)
+                            zombie.health -= player.weapons[player.currentWeapon].damage;
+                            player.bullets.splice(j, 1);
+                            if (zombie.health <= 0) {
+                                this.zombies.splice(i, 1);
+                                game.coins += 10;
+                                zombiesRemoved++;
+                                game.zombieDeathSound.play().catch(e => console.log('Zombie death sound failed:', e));
+                                console.log(`Zombie killed, coins: ${game.coins}, zombies left: ${this.zombies.length}`);
+                            }
+                            hitThisFrame = true;
+                            break; // One bullet per zombie per frame
+                        }
+                    }
+                    // Remove off-screen zombies
+                    if (!hitThisFrame && (zombie.x < -zombie.radius || zombie.x > canvas.width + zombie.radius ||
+                                         zombie.y < -zombie.radius || zombie.y > canvas.height + zombie.radius)) {
+                        console.log(`Removing off-screen zombie at (${zombie.x.toFixed(2)}, ${zombie.y.toFixed(2)})`);
+                        this.zombies.splice(i, 1);
+                        zombiesRemoved++;
+                    }
+                }
+                if (zombiesRemoved > 0) {
+                    console.log(`Removed ${zombiesRemoved} zombies this frame, total remaining: ${this.zombies.length}`);
+                }
+            }
+
+            render(ctx) {
+                // Use zombie.png with rotation based on player direction
+                if (game.zombieImage.complete) {
+                    this.zombies.forEach(zombie => {
+                        ctx.save();
+                        ctx.translate(zombie.x, zombie.y);
+                        const dx = game.player.x - zombie.x;
+                        const dy = game.player.y - zombie.y;
+                        zombie.direction = Math.atan2(dy, dx); // Use atan2 directly for right-facing default
+                        ctx.rotate(zombie.direction);
+                        ctx.drawImage(game.zombieImage, -zombie.radius, -zombie.radius, zombie.radius * 2, zombie.radius * 2);
+                        ctx.restore();
+                    });
+                } else {
+                    this.zombies.forEach(zombie => {
+                        ctx.fillStyle = 'red';
+                        ctx.beginPath();
+                        ctx.arc(zombie.x, zombie.y, zombie.radius, 0, Math.PI * 2);
+                        ctx.fill();
+                    });
+                }
+            }
+        }
+
+        // Zombie class
+        class Zombie {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.health = 20; // Balanced for difficulty
+                this.speed = 2; // Keep slow for dodging
+                this.radius = 15;
+                this.lastHit = 0; // Track last hit time for cooldown
+                this.direction = 0; // Initial direction (0 radians = right)
+            }
+
+            update(deltaTime, player, obstacles) {
+                const dx = player.x - this.x;
+                const dy = player.y - this.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance > 0) {
+                    const moveDistance = this.speed * deltaTime * 60;
+                    let newX = this.x + (dx / distance) * moveDistance;
+                    let newY = this.y + (dy / distance) * moveDistance;
+
+                    if (newX - this.radius < 0) newX = this.radius;
+                    if (newX + this.radius > canvas.width) newX = canvas.width - this.radius;
+                    if (newY - this.radius < 0) newY = this.radius;
+                    if (newY + this.radius > canvas.height) newY = canvas.height - this.radius;
+
+                    if (!this.checkCollision(newX, newY, obstacles)) {
+                        this.x = newX;
+                        this.y = newY;
+                    }
+                }
+
+                // Update direction based on player position
+                this.direction = Math.atan2(player.y - this.y, player.x - this.x); // Use atan2 directly for right-facing default
+            }
+
+            render(ctx) {
+                // Render handled by ZombieManager for consistency
+            }
+
+            checkCollision(newX, newY, obstacles) {
+                const zombieRect = {
+                    left: newX - this.radius,
+                    right: newX + this.radius,
+                    top: newY - this.radius,
+                    bottom: newY + this.radius
+                };
+                return obstacles.some(obstacle => 
+                    zombieRect.left < obstacle.right &&
+                    zombieRect.right > obstacle.left &&
+                    zombieRect.top < obstacle.bottom &&
+                    zombieRect.bottom > obstacle.top
+                );
+            }
+        }
+
+        // ObstacleManager class
+        class ObstacleManager {
+            constructor() {
+                this.obstacles = [
+                    { left: 0, top: 0, right: 800, bottom: 50 },
+                    { left: 200, top: 200, right: 300, bottom: 300 }
+                ];
+            }
+
+            render(ctx) {
+                ctx.fillStyle = 'gray';
+                this.obstacles.forEach(obstacle => {
+                    ctx.fillRect(obstacle.left, obstacle.top, 
+                                obstacle.right - obstacle.left, obstacle.bottom - obstacle.top);
+                });
+            }
+        }
+
+        // Store class
+        class Store {
+            constructor(game) {
+                this.game = game;
+                this.player = game.player;
+                this.items = [
+                    { name: 'Health +20', cost: 50, action: () => { this.player.maxHealth += 20; this.player.health = this.player.maxHealth; } },
+                    { name: 'Speed +20%', cost: 40, action: () => this.player.speed *= 1.2 },
+                    { name: 'Damage +10%', cost: 30, action: () => this.player.weapons.forEach(w => w.damage *= 1.1) },
+                    { name: 'Fire Rate +20%', cost: 35, action: () => this.player.weapons.forEach(w => w.fireRate *= 1.2) },
+                    { name: 'Shotgun', cost: 100, action: () => this.player.weapons.push({ name: 'shotgun', damage: 20, fireRate: 1, lastShot: 0 }), oneTime: true },
+                    { name: 'Assault Rifle', cost: 150, action: () => this.player.weapons.push({ name: 'assault', damage: 15, fireRate: 5, lastShot: 0 }), oneTime: true }
+                ];
+                this.purchased = new Set();
+            }
+
+            handleClick(x, y) {
+                console.log(`Click at (${x}, ${y})`);
+                this.items.forEach((item, index) => {
+                    const buttonY = 150 + index * 50;
+                    if (x >= 300 && x <= 500 && y >= buttonY && y <= buttonY + 40 && 
+                        this.game.coins >= item.cost && (!item.oneTime || !this.purchased.has(item.name))) {
+                        this.game.coins -= item.cost;
+                        item.action();
+                        if (item.oneTime) {
+                            this.purchased.add(item.name);
+                            this.player.currentWeapon = this.player.weapons.length - 1;
+                        }
+                        console.log(`Purchased ${item.name}, coins left: ${this.game.coins}`);
+                    }
+                });
+
+                if (x >= 350 && x <= 450 && y >= 500 && y <= 540) {
+                    console.log('Continuing to next wave');
+                    this.game.state = 'play';
+                    this.game.nextWave();
+                }
+            }
+
+            render(ctx) {
+                ctx.fillStyle = '#fff'; // White background for store
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#000'; // Black text for store
+                ctx.font = '30px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(`Wave ${this.game.wave} Complete!`, canvas.width / 2, 100);
+                ctx.fillText(`Coins: ${this.game.coins}`, canvas.width / 2, 130);
+
+                ctx.font = '20px Arial';
+                this.items.forEach((item, index) => {
+                    const yPos = 150 + index * 50;
+                    ctx.fillStyle = (this.game.coins >= item.cost && (!item.oneTime || !this.purchased.has(item.name))) ? '#000' : '#f00';
+                    ctx.fillText(`${item.name} - ${item.cost} coins`, canvas.width / 2, yPos + 20);
+                    ctx.strokeStyle = ctx.fillStyle;
+                    ctx.strokeRect(300, yPos, 200, 40);
+                });
+
+                ctx.fillStyle = '#000';
+                ctx.fillText('Continue', canvas.width / 2, 520);
+                ctx.strokeStyle = '#000';
+                ctx.strokeRect(350, 500, 100, 40);
+            }
+        }
+
+        const game = new Game();
+    </script>
+</body>
+</html>
